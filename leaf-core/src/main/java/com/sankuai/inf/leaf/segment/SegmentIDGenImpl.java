@@ -44,7 +44,7 @@ public class SegmentIDGenImpl implements IDGen {
     private ExecutorService service = new ThreadPoolExecutor(5, Integer.MAX_VALUE, 60L, TimeUnit.SECONDS, new SynchronousQueue<Runnable>(), new UpdateThreadFactory());
 
     /**
-     * 为什么要使用 volatile
+     * 为什么要使用 volatile -> 可见性(初始化的线程和执行getId的线程不是同一个线程,防止初始化后,执行getId的线程获取不到最新的状态)
      */
     private volatile boolean initOK = false;
 
@@ -147,20 +147,20 @@ public class SegmentIDGenImpl implements IDGen {
 
     @Override
     public Result get(final String key) {
-        // 必须初始化后执行
+        // 必须在 SegmentIDGenImpl 初始化后执行. init()方法
         if (!initOK) {
             return new Result(EXCEPTION_ID_IDCACHE_INIT_FALSE, Status.EXCEPTION);
         }
-
         // 通过缓存获取SegmentBuffer
         if (cache.containsKey(key)) {
 
-            // 从缓存中获取对应key的Buffer
+            // 从缓存中获取对应key的 SegmentBuffer
             SegmentBuffer buffer = cache.get(key);
 
-            // buffer 没有初始化,则先进行初始化.
+            // SegmentBuffer 没有初始化,则先进行初始化.
             if (!buffer.isInitOk()) {
                 synchronized (buffer) {
+                    // 双重判断,避免重复执行SegmentBuffer的初始化操作.
                     if (!buffer.isInitOk()) {
                         try {
                             updateSegmentFromDb(key, buffer.getCurrent());
@@ -249,16 +249,20 @@ public class SegmentIDGenImpl implements IDGen {
     public Result getIdFromSegmentBuffer(final SegmentBuffer buffer) {
         while (true) {
             try {
+                // 获取buffer的读锁
                 buffer.rLock().lock();
                 // 获取当前的号段
                 final Segment segment = buffer.getCurrent();
-                // nextReady is false
-                if (!buffer.isNextReady()
-                         // idle = max - currentValue ,
-                        && (segment.getIdle() < 0.9 * segment.getStep())
-                        // buffer 中的 threadRunning字段. 是否已经开始运行.
-                        && buffer.getThreadRunning().compareAndSet(false, true)) {
 
+                if (    // nextReady is false (下一个号段没有初始化.)
+                        !buffer.isNextReady()
+                        // idle = max - currentValue (当前号段下发的值到达设置的阈值 0.9 )
+                        && (segment.getIdle() < 0.9 * segment.getStep())
+                        // buffer 中的 threadRunning字段. 代表是否已经提交线程池运行.(是否有其他线程已经开始进行另外号段的初始化工作.
+                        // 使用 CAS 进行更新. buffer 在任意时刻,只会有一个线程进行异步更新另外一个号段.
+                        && buffer.getThreadRunning().compareAndSet(false, true)
+                ) {
+                    // 放入线程池进行异步更新.
                     service.execute(new Runnable() {
                         @Override
                         public void run() {
@@ -266,15 +270,19 @@ public class SegmentIDGenImpl implements IDGen {
                             boolean updateOk = false;
                             try {
                                 updateSegmentFromDb(buffer.getKey(), next);
+
+                                // 更新成功,设置标记位为true
                                 updateOk = true;
                                 logger.info("update segment {} from db {}", buffer.getKey(), next);
                             } catch (Exception e) {
                                 logger.warn(buffer.getKey() + " updateSegmentFromDb exception", e);
                             } finally {
                                 if (updateOk) {
-                                    // 获取锁
+                                    // 获取buffer 的写锁
                                     buffer.wLock().lock();
+                                    // next准备完成
                                     buffer.setNextReady(true);
+                                    // next运行标记位设置为false
                                     buffer.getThreadRunning().set(false);
                                     buffer.wLock().unlock();
                                 } else {
@@ -305,13 +313,15 @@ public class SegmentIDGenImpl implements IDGen {
                 // buffer 级别加写锁.
                 buffer.wLock().lock();
                 final Segment segment = buffer.getCurrent();
-                // 获取value -> 为什么重复获取value, 多线程执行时,在进行waitAndSleep() 后, current segment可能会被修改. 直接进行一次判断,提高速度,并且防止出错.
+                // 获取value -> 为什么重复获取value, 多线程执行时,在进行waitAndSleep() 后,
+                // current segment可能会被修改. 直接进行一次判断,提高速度,并且防止出错(在交换Segment前进行一次检查).
                 long value = segment.getValue().getAndIncrement();
                 if (value < segment.getMax()) {
                     return new Result(value, Status.SUCCESS);
                 }
 
-                // 执行到这里, 别的线程没有进行号段的调换, 判断nextReady是否为true.
+                // 执行到这里, 别的线程没有进行号段的调换,并且当前号段所有号码已经下发完成.
+                // 判断nextReady是否为true.
                 if (buffer.isNextReady()) {
                     // 调换segment
                     buffer.switchPos();
@@ -321,11 +331,12 @@ public class SegmentIDGenImpl implements IDGen {
                     // 进入这里的条件
                     // 1. 当前号段获取到的值大于maxValue
                     // 2. 另外一个号段还没有准备好
+                    // 3. 等待时长大于waitAndSleep中的时间.
                     logger.error("Both two segments in {} are not ready!", buffer);
                     return new Result(EXCEPTION_ID_TWO_SEGMENTS_ARE_NULL, Status.EXCEPTION);
                 }
             } finally {
-                // finall代码块中释放写锁.
+                // finally代码块中释放写锁.
                 buffer.wLock().unlock();
             }
         }
