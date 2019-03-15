@@ -92,4 +92,20 @@ public class SegmentBufferView {
     public void setInitOk(boolean initOk) {
         this.initOk = initOk;
     }
+
+    @Override
+    public String toString() {
+        return "SegmentBufferView{" +
+                "key='" + key + '\'' +
+                ", value0=" + value0 +
+                ", step0=" + step0 +
+                ", max0=" + max0 +
+                ", value1=" + value1 +
+                ", step1=" + step1 +
+                ", max1=" + max1 +
+                ", pos=" + pos +
+                ", nextReady=" + nextReady +
+                ", initOk=" + initOk +
+                '}';
+    }
 }

@@ -37,9 +37,25 @@ public class SegmentIDGenImpl implements IDGen {
      * 一个Segment维持时间为15分钟
      */
     private static final long SEGMENT_DURATION = 15 * 60 * 1000L;
+
+    /**
+     * getIdFromSegmentBuffer 中调用,使用异步的方式,更新号段. (double segment)
+     */
     private ExecutorService service = new ThreadPoolExecutor(5, Integer.MAX_VALUE, 60L, TimeUnit.SECONDS, new SynchronousQueue<Runnable>(), new UpdateThreadFactory());
+
+    /**
+     * 为什么要使用 volatile
+     */
     private volatile boolean initOK = false;
-    private Map<String, SegmentBuffer> cache = new ConcurrentHashMap<String, SegmentBuffer>();
+
+    /**
+     * 使用ConcurrentHashMap 缓存tags
+     */
+    private Map<String, SegmentBuffer> cache = new ConcurrentHashMap<>();
+
+    /**
+     *  数据库访问组件
+     */
     private IDAllocDao dao;
 
     public static class UpdateThreadFactory implements ThreadFactory {
@@ -62,10 +78,14 @@ public class SegmentIDGenImpl implements IDGen {
         // 确保加载到kv后才初始化成功
         updateCacheFromDb();
         initOK = true;
+
         updateCacheFromDbAtEveryMinute();
         return initOK;
     }
 
+    /**
+     *  使用定时线程,定时更新CacheTags
+     */
     private void updateCacheFromDbAtEveryMinute() {
         ScheduledExecutorService service = Executors.newSingleThreadScheduledExecutor(new ThreadFactory() {
             @Override
@@ -92,11 +112,14 @@ public class SegmentIDGenImpl implements IDGen {
             if (dbTags == null || dbTags.isEmpty()) {
                 return;
             }
-            List<String> cacheTags = new ArrayList<String>(cache.keySet());
-            List<String> insertTags = new ArrayList<String>(dbTags);
-            List<String> removeTags = new ArrayList<String>(cacheTags);
-            //db中新加的tags灌进cache
+            List<String> cacheTags = new ArrayList<>(cache.keySet());
+            List<String> insertTags = new ArrayList<>(dbTags);
+            List<String> removeTags = new ArrayList<>(cacheTags);
+
+            //db中新加的tags灌进cache,(db中的keys - cache中的keys = 新增加的keys)
             insertTags.removeAll(cacheTags);
+
+            // 把新加的key 都加入cache
             for (String tag : insertTags) {
                 SegmentBuffer buffer = new SegmentBuffer();
                 buffer.setKey(tag);
@@ -107,8 +130,10 @@ public class SegmentIDGenImpl implements IDGen {
                 cache.put(tag, buffer);
                 logger.info("Add tag {} from db to IdCache, SegmentBuffer {}", tag, buffer);
             }
-            //cache中已失效的tags从cache删除
+
+            //cache中已失效的tags从cache删除(cacheTags - dbTags = 需要删除的tag)
             removeTags.removeAll(dbTags);
+
             for (String tag : removeTags) {
                 cache.remove(tag);
                 logger.info("Remove tag {} from IdCache", tag);
@@ -122,11 +147,18 @@ public class SegmentIDGenImpl implements IDGen {
 
     @Override
     public Result get(final String key) {
+        // 必须初始化后执行
         if (!initOK) {
             return new Result(EXCEPTION_ID_IDCACHE_INIT_FALSE, Status.EXCEPTION);
         }
+
+        // 通过缓存获取SegmentBuffer
         if (cache.containsKey(key)) {
+
+            // 从缓存中获取对应key的Buffer
             SegmentBuffer buffer = cache.get(key);
+
+            // buffer 没有初始化,则先进行初始化.
             if (!buffer.isInitOk()) {
                 synchronized (buffer) {
                     if (!buffer.isInitOk()) {
@@ -148,52 +180,85 @@ public class SegmentIDGenImpl implements IDGen {
     public void updateSegmentFromDb(String key, Segment segment) {
         StopWatch sw = new Slf4JStopWatch();
         SegmentBuffer buffer = segment.getBuffer();
+
         LeafAlloc leafAlloc;
+
         if (!buffer.isInitOk()) {
+            // 第一次初始化
             leafAlloc = dao.updateMaxIdAndGetLeafAlloc(key);
             buffer.setStep(leafAlloc.getStep());
-            buffer.setMinStep(leafAlloc.getStep());//leafAlloc中的step为DB中的step
+
+            //leafAlloc中的step为DB中的step
+            buffer.setMinStep(leafAlloc.getStep());
         } else if (buffer.getUpdateTimestamp() == 0) {
+            // 第二次
+            // 第二号段,设置updateTimestamp
             leafAlloc = dao.updateMaxIdAndGetLeafAlloc(key);
             buffer.setUpdateTimestamp(System.currentTimeMillis());
-            buffer.setMinStep(leafAlloc.getStep());//leafAlloc中的step为DB中的step
+
+            //leafAlloc中的step为DB中的step
+            buffer.setMinStep(leafAlloc.getStep());
         } else {
+            // 三次以上 动态设置 nextStep
             long duration = System.currentTimeMillis() - buffer.getUpdateTimestamp();
             int nextStep = buffer.getStep();
+            // 15分钟
             if (duration < SEGMENT_DURATION) {
                 if (nextStep * 2 > MAX_STEP) {
                     //do nothing
                 } else {
+                    // 步数 * 2
                     nextStep = nextStep * 2;
                 }
+                // 15分 < duration < 30
             } else if (duration < SEGMENT_DURATION * 2) {
                 //do nothing with nextStep
             } else {
+                // duration > 30 步数缩小一半,但是大于最小步数(数据库中配置的步数)
                 nextStep = nextStep / 2 >= buffer.getMinStep() ? nextStep / 2 : nextStep;
             }
+
             logger.info("leafKey[{}], step[{}], duration[{}mins], nextStep[{}]", key, buffer.getStep(), String.format("%.2f",((double)duration / (1000 * 60))), nextStep);
             LeafAlloc temp = new LeafAlloc();
+
             temp.setKey(key);
             temp.setStep(nextStep);
+            // 更新maxId by CustomStep (nextStep)
             leafAlloc = dao.updateMaxIdByCustomStepAndGetLeafAlloc(temp);
+
+            // 更新 updateTimestamp
             buffer.setUpdateTimestamp(System.currentTimeMillis());
+            // 设置 buffer的step
             buffer.setStep(nextStep);
-            buffer.setMinStep(leafAlloc.getStep());//leafAlloc的step为DB中的step
+            //leafAlloc的step为DB中的step
+            buffer.setMinStep(leafAlloc.getStep());
         }
-        // must set value before set max
+
+        // must set value before set max TODO
+        // 防止多线程引起问题. 如果先设置max后,失去cpu轮换时间,别的线程执行getID操作
+        // , 执行到switchPos,切换号段,获取value,发现 value < max,会返回无效的value.
         long value = leafAlloc.getMaxId() - buffer.getStep();
         segment.getValue().set(value);
+
         segment.setMax(leafAlloc.getMaxId());
         segment.setStep(buffer.getStep());
         sw.stop("updateSegmentFromDb", key + " " + segment);
     }
 
+
     public Result getIdFromSegmentBuffer(final SegmentBuffer buffer) {
         while (true) {
             try {
                 buffer.rLock().lock();
+                // 获取当前的号段
                 final Segment segment = buffer.getCurrent();
-                if (!buffer.isNextReady() && (segment.getIdle() < 0.9 * segment.getStep()) && buffer.getThreadRunning().compareAndSet(false, true)) {
+                // nextReady is false
+                if (!buffer.isNextReady()
+                         // idle = max - currentValue ,
+                        && (segment.getIdle() < 0.9 * segment.getStep())
+                        // buffer 中的 threadRunning字段. 是否已经开始运行.
+                        && buffer.getThreadRunning().compareAndSet(false, true)) {
+
                     service.execute(new Runnable() {
                         @Override
                         public void run() {
@@ -207,6 +272,7 @@ public class SegmentIDGenImpl implements IDGen {
                                 logger.warn(buffer.getKey() + " updateSegmentFromDb exception", e);
                             } finally {
                                 if (updateOk) {
+                                    // 获取锁
                                     buffer.wLock().lock();
                                     buffer.setNextReady(true);
                                     buffer.getThreadRunning().set(false);
@@ -218,41 +284,66 @@ public class SegmentIDGenImpl implements IDGen {
                         }
                     });
                 }
+
+                // 获取value
                 long value = segment.getValue().getAndIncrement();
+
+                // value < 当前号段的最大值,则返回改值
                 if (value < segment.getMax()) {
                     return new Result(value, Status.SUCCESS);
                 }
             } finally {
                 buffer.rLock().unlock();
             }
+
+            // 等待下一个号段执行完成,执行代码在-> execute()
+            // buffer.setNextReady(true);
+            // buffer.getThreadRunning().set(false);
             waitAndSleep(buffer);
+
             try {
+                // buffer 级别加写锁.
                 buffer.wLock().lock();
                 final Segment segment = buffer.getCurrent();
+                // 获取value -> 为什么重复获取value, 多线程执行时,在进行waitAndSleep() 后, current segment可能会被修改. 直接进行一次判断,提高速度,并且防止出错.
                 long value = segment.getValue().getAndIncrement();
                 if (value < segment.getMax()) {
                     return new Result(value, Status.SUCCESS);
                 }
+
+                // 执行到这里, 别的线程没有进行号段的调换, 判断nextReady是否为true.
                 if (buffer.isNextReady()) {
+                    // 调换segment
                     buffer.switchPos();
+                    // 调换完成后, 设置nextReady为false
                     buffer.setNextReady(false);
                 } else {
+                    // 进入这里的条件
+                    // 1. 当前号段获取到的值大于maxValue
+                    // 2. 另外一个号段还没有准备好
                     logger.error("Both two segments in {} are not ready!", buffer);
                     return new Result(EXCEPTION_ID_TWO_SEGMENTS_ARE_NULL, Status.EXCEPTION);
                 }
             } finally {
+                // finall代码块中释放写锁.
                 buffer.wLock().unlock();
             }
         }
     }
 
+    /**
+     * 等待下一个号段执行完成
+     * buffer.setNextReady(true);
+     * buffer.getThreadRunning().set(false);
+     * @param buffer
+     */
     private void waitAndSleep(SegmentBuffer buffer) {
         int roll = 0;
         while (buffer.getThreadRunning().get()) {
             roll += 1;
             if(roll > 10000) {
                 try {
-                    Thread.currentThread().sleep(10);
+                    Thread.sleep(10);
                     break;
                 } catch (InterruptedException e) {
                     logger.warn("Thread {} Interrupted",Thread.currentThread().getName());

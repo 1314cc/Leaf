@@ -10,16 +10,55 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
  * 双buffer
  */
 public class SegmentBuffer {
+
+    /**
+     * tag_key
+     */
     private String key;
-    private Segment[] segments; //双buffer
-    private volatile int currentPos; //当前的使用的segment的index
-    private volatile boolean nextReady; //下一个segment是否处于可切换状态
-    private volatile boolean initOk; //是否初始化完成
-    private final AtomicBoolean threadRunning; //线程是否在运行中
+
+    /**
+     * 双 Buffer
+     */
+    private Segment[] segments;
+
+    /**
+     * 当前的使用的segment的index
+     */
+    private volatile int currentPos;
+
+    /**
+     * 下一个segment是否处于可切换状态
+     */
+    private volatile boolean nextReady;
+
+    /**
+     * 是否初始化完成
+     */
+    private volatile boolean initOk;
+
+    /**
+     * 线程是否在运行中
+     */
+    private final AtomicBoolean threadRunning;
+
+    /**
+     * 每个buffer都有自己的一把锁
+     */
     private final ReadWriteLock lock;
 
+    /**
+     * 步长(根据号段补充时间动态变化)
+     */
     private volatile int step;
+
+    /**
+     * 最小步长
+     */
     private volatile int minStep;
+
+    /**
+     * 更新时间戳
+     */
     private volatile long updateTimestamp;
 
     public SegmentBuffer() {

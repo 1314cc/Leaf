@@ -21,8 +21,10 @@ public class SegmentService {
     private Logger logger = LoggerFactory.getLogger(SegmentService.class);
     IDGen idGen;
     DruidDataSource dataSource;
+
     public SegmentService() throws SQLException, InitException {
         Properties properties = PropertyFactory.getProperties();
+
         boolean flag = Boolean.parseBoolean(properties.getProperty(Constants.LEAF_SEGMENT_ENABLE, "true"));
         if (flag) {
 
@@ -32,6 +34,10 @@ public class SegmentService {
             dataSource.setUrl(properties.getProperty(Constants.LEAF_JDBC_URL));
             dataSource.setUsername(properties.getProperty(Constants.LEAF_JDBC_USERNAME));
             dataSource.setPassword(properties.getProperty(Constants.LEAF_JDBC_PASSWORD));
+
+            logger.info(properties.getProperty(Constants.LEAF_JDBC_URL));
+            logger.info(properties.getProperty(Constants.LEAF_JDBC_USERNAME));
+            logger.info(properties.getProperty(Constants.LEAF_JDBC_PASSWORD));
             dataSource.init();
 
             // Config Dao
