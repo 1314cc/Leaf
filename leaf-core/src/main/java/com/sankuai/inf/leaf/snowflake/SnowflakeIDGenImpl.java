@@ -21,7 +21,9 @@ public class SnowflakeIDGenImpl implements IDGen {
 
     private final long twepoch = 1288834974657L;
     private final long workerIdBits = 10L;
-    private final long maxWorkerId = -1L ^ (-1L << workerIdBits);//最大能够分配的workerid =1023
+
+    //最大能够分配的workerid =1023
+    private final long maxWorkerId = -1L ^ (-1L << workerIdBits);
     private final long sequenceBits = 12L;
     private final long workerIdShift = sequenceBits;
     private final long timestampLeftShift = sequenceBits + workerIdBits;
@@ -36,6 +38,7 @@ public class SnowflakeIDGenImpl implements IDGen {
     public SnowflakeIDGenImpl(String zkAddress, int port) {
         this.port = port;
         SnowflakeZookeeperHolder holder = new SnowflakeZookeeperHolder(Utils.getIp(), String.valueOf(port), zkAddress);
+
         initFlag = holder.init();
         if (initFlag) {
             workerId = holder.getWorkerID();
@@ -46,6 +49,7 @@ public class SnowflakeIDGenImpl implements IDGen {
         Preconditions.checkArgument(workerId >= 0 && workerId <= maxWorkerId, "workerID must gte 0 and lte 1023");
     }
 
+    @Override
     public synchronized Result get(String key) {
         long timestamp = timeGen();
         if (timestamp < lastTimestamp) {
@@ -79,7 +83,6 @@ public class SnowflakeIDGenImpl implements IDGen {
         lastTimestamp = timestamp;
         long id = ((timestamp - twepoch) << timestampLeftShift) | (workerId << workerIdShift) | sequence;
         return new Result(id, Status.SUCCESS);
-
     }
 
     protected long tilNextMillis(long lastTimestamp) {

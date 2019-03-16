@@ -28,12 +28,23 @@ import java.util.concurrent.TimeUnit;
 
 public class SnowflakeZookeeperHolder {
     private static final Logger LOGGER = LoggerFactory.getLogger(SnowflakeZookeeperHolder.class);
-    private String zk_AddressNode = null;//保存自身的key  ip:port-000000001
-    private String listenAddress = null;//保存自身的key ip:port
+    /**
+     * 保存自身的key  ip:port-000000001
+     */
+    private String zk_AddressNode = null;
+    /**
+     * 保存自身的key ip:port
+     */
+    private String listenAddress = null;
     private int workerID;
     private static final String PREFIX_ZK_PATH = "/snowflake/" + PropertyFactory.getProperties().getProperty("leaf.name");
-    private static final String PROP_PATH = System.getProperty("java.io.tmpdir") + File.separator + PropertyFactory.getProperties().getProperty("leaf.name") + "/leafconf/{port}/workerID.properties";
-    private static final String PATH_FOREVER = PREFIX_ZK_PATH + "/forever";//保存所有数据持久的节点
+    private static final String PROP_PATH = System.getProperty("java.io.tmpdir")
+            + File.separator + PropertyFactory.getProperties().getProperty("leaf.name")
+            + "/leafconf/{port}/workerID.properties";
+    /**
+     * 保存所有数据持久的节点
+     */
+    private static final String PATH_FOREVER = PREFIX_ZK_PATH + "/forever";
     private String ip;
     private String port;
     private String connectionString;
@@ -48,40 +59,51 @@ public class SnowflakeZookeeperHolder {
 
     public boolean init() {
         try {
-            CuratorFramework curator = createWithOptions(connectionString, new RetryUntilElapsed(1000, 4), 10000, 6000);
+            CuratorFramework curator = createWithOptions(connectionString
+                    , new RetryUntilElapsed(1000, 4)
+                    , 10000
+                    , 6000);
+
             curator.start();
             Stat stat = curator.checkExists().forPath(PATH_FOREVER);
+
             if (stat == null) {
-                //不存在根节点,机器第一次启动,创建/snowflake/ip:port-000000000,并上传数据
+                // 不存在根节点,机器第一次启动,创建/snowflake/ip:port-000000000,并上传数据
                 zk_AddressNode = createNode(curator);
-                //worker id 默认是0
+                // worker id 默认是0
                 updateLocalWorkerID(workerID);
-                //定时上报本机时间给forever节点
+                // 定时上报本机时间给forever节点
                 ScheduledUploadData(curator, zk_AddressNode);
                 return true;
             } else {
-                Map<String, Integer> nodeMap = Maps.newHashMap();//ip:port->00001
-                Map<String, String> realNode = Maps.newHashMap();//ip:port->(ipport-000001)
-                //存在根节点,先检查是否有属于自己的根节点
+                // ip:port->00001
+                Map<String, Integer> nodeMap = Maps.newHashMap();
+                // ip:port->(ipport-000001)
+                Map<String, String> realNode = Maps.newHashMap();
+                // 存在根节点,先检查是否有属于自己的根节点
                 List<String> keys = curator.getChildren().forPath(PATH_FOREVER);
                 for (String key : keys) {
                     String[] nodeKey = key.split("-");
                     realNode.put(nodeKey[0], key);
                     nodeMap.put(nodeKey[0], Integer.parseInt(nodeKey[1]));
                 }
-                Integer workerid = nodeMap.get(listenAddress);
-                if (workerid != null) {
+
+                Integer workerId = nodeMap.get(listenAddress);
+
+                if (workerId != null) {
                     //有自己的节点,zk_AddressNode=ip:port
                     zk_AddressNode = PATH_FOREVER + "/" + realNode.get(listenAddress);
-                    workerID = workerid;//启动worder时使用会使用
-                    if (!checkInitTimeStamp(curator, zk_AddressNode))
+                    workerID = workerId;
+                    // 启动 worker 时使用会使用
+                    if (!checkInitTimeStamp(curator, zk_AddressNode)) {
                         throw new CheckLastTimeException("init timestamp check error,forever node timestamp gt this node time");
-                    //准备创建临时节点
+                    }
+                    // 准备创建临时节点
                     doService(curator);
                     updateLocalWorkerID(workerID);
                     LOGGER.info("[Old NODE]find forever node have this endpoint ip-{} port-{} workid-{} childnode and start SUCCESS", ip, port, workerID);
                 } else {
-                    //表示新启动的节点,创建持久节点 ,不用check时间
+                    // 表示新启动的节点,创建持久节点 ,不用check时间
                     String newNode = createNode(curator);
                     zk_AddressNode = newNode;
                     String[] nodeKey = newNode.split("-");
@@ -107,9 +129,11 @@ public class SnowflakeZookeeperHolder {
     }
 
     private void doService(CuratorFramework curator) {
-        ScheduledUploadData(curator, zk_AddressNode);// /snowflake_forever/ip:port-000000001
+        // /snowflake_forever/ip:port-000000001
+        ScheduledUploadData(curator, zk_AddressNode);
     }
 
+    //每3s上报数据
     private void ScheduledUploadData(final CuratorFramework curator, final String zk_AddressNode) {
         Executors.newSingleThreadScheduledExecutor(new ThreadFactory() {
             @Override
@@ -123,7 +147,7 @@ public class SnowflakeZookeeperHolder {
             public void run() {
                 updateNewData(curator, zk_AddressNode);
             }
-        }, 1L, 3L, TimeUnit.SECONDS);//每3s上报数据
+        }, 1L, 3L, TimeUnit.SECONDS);
 
     }
 
@@ -186,7 +210,9 @@ public class SnowflakeZookeeperHolder {
      * @param workerID
      */
     private void updateLocalWorkerID(int workerID) {
-        File LeafconfFile = new File(PROP_PATH.replace("{port}", port));
+        String path = PROP_PATH.replace("{port}", port);
+        LOGGER.info("PATH is {}",path);
+        File LeafconfFile = new File(path);
         boolean exists = LeafconfFile.exists();
         LOGGER.info("file exists status is {}", exists);
         if (exists) {

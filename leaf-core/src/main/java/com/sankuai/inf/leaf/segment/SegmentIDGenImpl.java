@@ -14,6 +14,7 @@ import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicLong;
 
+
 public class SegmentIDGenImpl implements IDGen {
     private static final Logger logger = LoggerFactory.getLogger(SegmentIDGenImpl.class);
 
@@ -191,7 +192,7 @@ public class SegmentIDGenImpl implements IDGen {
             //leafAlloc中的step为DB中的step
             buffer.setMinStep(leafAlloc.getStep());
         } else if (buffer.getUpdateTimestamp() == 0) {
-            // 第二次
+            // 第二次,需要准备next Segment
             // 第二号段,设置updateTimestamp
             leafAlloc = dao.updateMaxIdAndGetLeafAlloc(key);
             buffer.setUpdateTimestamp(System.currentTimeMillis());
@@ -202,6 +203,13 @@ public class SegmentIDGenImpl implements IDGen {
             // 三次以上 动态设置 nextStep
             long duration = System.currentTimeMillis() - buffer.getUpdateTimestamp();
             int nextStep = buffer.getStep();
+
+            /**
+             *  动态调整step
+             *  1) duration < 15 分钟 : step 变为原来的2倍. 最大为 MAX_STEP
+             *  2) 15分钟 < duration < 30分钟 : nothing
+             *  3) duration > 30 分钟 : 缩小step ,最小为DB中配置的步数
+             */
             // 15分钟
             if (duration < SEGMENT_DURATION) {
                 if (nextStep * 2 > MAX_STEP) {
@@ -309,6 +317,7 @@ public class SegmentIDGenImpl implements IDGen {
             // buffer.getThreadRunning().set(false);
             waitAndSleep(buffer);
 
+
             try {
                 // buffer 级别加写锁.
                 buffer.wLock().lock();
@@ -320,7 +329,7 @@ public class SegmentIDGenImpl implements IDGen {
                     return new Result(value, Status.SUCCESS);
                 }
 
-                // 执行到这里, 别的线程没有进行号段的调换,并且当前号段所有号码已经下发完成.
+                // 执行到这里, 其他的线程没有进行号段的调换,并且当前号段所有号码已经下发完成.
                 // 判断nextReady是否为true.
                 if (buffer.isNextReady()) {
                     // 调换segment
