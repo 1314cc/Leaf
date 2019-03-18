@@ -243,8 +243,8 @@ public class SegmentIDGenImpl implements IDGen {
         }
 
         // must set value before set max TODO
-        // 防止多线程引起问题. 如果先设置max后,失去cpu轮换时间,别的线程执行getID操作
-        // , 执行到switchPos,切换号段,获取value,发现 value < max,会返回无效的value.
+        // 暂时还未想通,这里为什么这样写.
+        // 已经向作者提交了issue.(https://github.com/Meituan-Dianping/Leaf/issues/16)
         long value = leafAlloc.getMaxId() - buffer.getStep();
         segment.getValue().set(value);
 
