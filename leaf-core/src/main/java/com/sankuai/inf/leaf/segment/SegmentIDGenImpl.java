@@ -323,7 +323,7 @@ public class SegmentIDGenImpl implements IDGen {
                 buffer.wLock().lock();
                 final Segment segment = buffer.getCurrent();
                 // 获取value -> 为什么重复获取value, 多线程执行时,在进行waitAndSleep() 后,
-                // current segment可能会被修改. 直接进行一次判断,提高速度,并且防止出错(在交换Segment前进行一次检查).
+                // 当前Segment可能已经被调换了.直接进行一次获取value的操作,可以提高id下发的速度(没必要再走一次循环),并且防止出错(在交换Segment前进行一次检查)
                 long value = segment.getValue().getAndIncrement();
                 if (value < segment.getMax()) {
                     return new Result(value, Status.SUCCESS);
